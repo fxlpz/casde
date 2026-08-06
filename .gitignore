@@ -1,0 +1,18 @@
+# Binários
+/bin/
+*.exe
+*.test
+
+# Banco local
+*.db
+*.db-wal
+*.db-shm
+
+# Ambiente
+.env
+venv/
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
