@@ -8,6 +8,9 @@
 *.db-wal
 *.db-shm
 
+# Saídas de scan
+js_scan/
+
 # Ambiente
 .env
 venv/

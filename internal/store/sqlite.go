@@ -53,19 +53,11 @@ func dirOf(p string) string {
 
 func now() string { return time.Now().UTC().Format(time.RFC3339) }
 
-// Init aplica o schema. Como lidamos com multi-statement, lemos o arquivo
-// schema.sql e executamos statement por statement (o driver modernc não
-// executa múltiplos statements num único Exec fácil com comentários).
+// Init aplica o schema embutido (go:embed) ao banco.
+// Como o driver modernc executa múltiplos statements com comentários SQL,
+// basta um Exec com o schema completo.
 func (s *SQLiteStore) Init(ctx context.Context) error {
-	schema, err := os.ReadFile("schema.sql")
-	if err != nil {
-		// Fallback: também aceita schema embutido abaixo (defesa).
-		_, err = s.db.ExecContext(ctx, builtinSchema)
-		return err
-	}
-	// modernc aceita múltiplos statements separados por ; quando não há
-	// parâmetros. Comentários SQL (--) são aceitos.
-	if _, err := s.db.ExecContext(ctx, string(schema)); err != nil {
+	if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("aplicar schema: %w", err)
 	}
 	return nil
@@ -261,12 +253,100 @@ func (s *SQLiteStore) GetSnapshotsForCommit(ctx context.Context, commitID int64)
 	return out, rows.Err()
 }
 
-// builtinSchema fallback: mesmo schema (para uso sem ler do disco).
-const builtinSchema = `
-CREATE TABLE IF NOT EXISTS targets (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT (datetime('now')));
-CREATE TABLE IF NOT EXISTS assets (id INTEGER PRIMARY KEY AUTOINCREMENT, target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE, url TEXT NOT NULL, method TEXT NOT NULL DEFAULT 'GET', first_seen TEXT NOT NULL DEFAULT (datetime('now')), last_seen TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(target_id, url, method));
-CREATE TABLE IF NOT EXISTS commits (id INTEGER PRIMARY KEY AUTOINCREMENT, target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE, commit_hash TEXT NOT NULL, parent_id INTEGER REFERENCES commits(id), summary TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
-CREATE TABLE IF NOT EXISTS snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE, commit_id INTEGER NOT NULL REFERENCES commits(id) ON DELETE CASCADE, status_code INTEGER, body_hash TEXT NOT NULL, body_size INTEGER NOT NULL DEFAULT 0, headers_json TEXT NOT NULL, captured_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(asset_id, commit_id));
-CREATE INDEX IF NOT EXISTS idx_snapshots_asset_commit ON snapshots(asset_id, commit_id);
-CREATE INDEX IF NOT EXISTS idx_commits_target ON commits(target_id, created_at DESC);
-`
+// --- Módulo 6: Findings Database ------------------------------------------
+
+func (s *SQLiteStore) UpsertFinding(ctx context.Context, f Finding) (int64, error) {
+	nowTs := now()
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO findings (target_name, url, module, category, severity, status,
+		                      param, payload, signal, confidence, raw, first_seen, last_seen)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(target_name, url, module, category, param, payload)
+		DO UPDATE SET last_seen=excluded.last_seen,
+		              signal=excluded.signal,
+		              confidence=excluded.confidence,
+		              raw=excluded.raw,
+		              status=CASE WHEN findings.status='open' THEN 'open' ELSE findings.status END`,
+		f.TargetName, f.URL, f.Module, f.Category, f.Severity, f.Status,
+		f.Param, f.Payload, f.Signal, f.Confidence, f.Raw, nowTs, nowTs)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *SQLiteStore) ListFindings(ctx context.Context, target, status string) ([]Finding, error) {
+	q := "SELECT id, target_name, url, module, category, severity, status, param, payload, signal, confidence, raw, first_seen, last_seen FROM findings WHERE 1=1"
+	var args []any
+	if target != "" {
+		q += " AND target_name=?"
+		args = append(args, target)
+	}
+	if status != "" {
+		q += " AND status=?"
+		args = append(args, status)
+	}
+	q += " ORDER BY first_seen DESC"
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Finding
+	for rows.Next() {
+		var f Finding
+		var first, last string
+		if err := rows.Scan(&f.ID, &f.TargetName, &f.URL, &f.Module, &f.Category,
+			&f.Severity, &f.Status, &f.Param, &f.Payload, &f.Signal,
+			&f.Confidence, &f.Raw, &first, &last); err != nil {
+			return nil, err
+		}
+		f.FirstSeen = parseTime(first)
+		f.LastSeen = parseTime(last)
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) SetFindingStatus(ctx context.Context, id int64, status, severity string) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE findings SET status=?, severity=?, last_seen=? WHERE id=?",
+		status, severity, now(), id)
+	return err
+}
+
+func (s *SQLiteStore) SaveOobCallback(ctx context.Context, c OobCallback) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO oob_callbacks (token, source, protocol, remote_ip, user_agent, path, headers, body, raw, received_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.Token, c.Source, c.Protocol, c.RemoteIP, c.UserAgent, c.Path, c.Headers, c.Body, c.Raw, now())
+	return err
+}
+
+func (s *SQLiteStore) ListOobCallbacks(ctx context.Context, token string) ([]OobCallback, error) {
+	q := "SELECT id, token, source, protocol, remote_ip, user_agent, path, headers, body, raw, received_at FROM oob_callbacks"
+	var args []any
+	if token != "" {
+		q += " WHERE token=?"
+		args = append(args, token)
+	}
+	q += " ORDER BY received_at DESC"
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OobCallback
+	for rows.Next() {
+		var c OobCallback
+		var rec string
+		if err := rows.Scan(&c.ID, &c.Token, &c.Source, &c.Protocol, &c.RemoteIP,
+			&c.UserAgent, &c.Path, &c.Headers, &c.Body, &c.Raw, &rec); err != nil {
+			return nil, err
+		}
+		c.Received = parseTime(rec)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

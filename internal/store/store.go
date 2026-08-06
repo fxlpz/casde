@@ -21,7 +21,7 @@ type Asset struct {
 	LastSeen  time.Time
 }
 
-// Snapshot é o estado observado de um asset numa execução do tracker.
+// Snapshot é o estado observado de um asset numa execução.
 type Snapshot struct {
 	ID          int64
 	AssetID     int64
@@ -31,6 +31,25 @@ type Snapshot struct {
 	BodySize    int
 	HeadersJSON string
 	CapturedAt  time.Time
+}
+
+// Finding é um achado registrado pelo módulo 6 (Findings Database).
+// `Raw` guarda o JSON completo do achado (payload, resposta, sinais).
+type Finding struct {
+	ID         int64
+	TargetName string
+	URL        string
+	Module     string // fuzz | jsast | params | oob | state
+	Category   string // sqli | xss | ssrf | idor | lfi | oob | info | other
+	Severity   string // critical | high | medium | low | info
+	Status     string // open | confirmed | false_positive | duplicate | out_of_scope
+	Param      string
+	Payload    string
+	Signal     string
+	Confidence float64
+	Raw        string
+	FirstSeen  time.Time
+	LastSeen   time.Time
 }
 
 // Commit representa uma execução completa do tracker para um target.
@@ -79,4 +98,26 @@ type Store interface {
 	GetCommitByID(ctx context.Context, id int64) (*Commit, error)
 	GetLatestCommit(ctx context.Context, targetID int64) (*Commit, error)
 	GetSnapshotsForCommit(ctx context.Context, commitID int64) ([]Snapshot, error)
+
+	// Módulo 6: Findings Database.
+	UpsertFinding(ctx context.Context, f Finding) (int64, error)
+	ListFindings(ctx context.Context, target, status string) ([]Finding, error)
+	SetFindingStatus(ctx context.Context, id int64, status, severity string) error
+	SaveOobCallback(ctx context.Context, c OobCallback) error
+	ListOobCallbacks(ctx context.Context, token string) ([]OobCallback, error)
+}
+
+// OobCallback é um callback de rede correlacionado (módulo 5).
+type OobCallback struct {
+	ID        int64
+	Token     string
+	Source    string // local | interactsh
+	Protocol  string // http | dns
+	RemoteIP  string
+	UserAgent string
+	Path      string
+	Headers   string
+	Body      string
+	Raw       string
+	Received  time.Time
 }

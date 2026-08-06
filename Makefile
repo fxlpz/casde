@@ -1,6 +1,6 @@
-.PHONY: build run test vet clean
+.PHONY: build run test vet clean jsast-deps
 
-BIN := bin/state-tracker
+BIN := bin/casde
 
 build:
 	go build -o $(BIN) ./cmd/state-tracker
@@ -16,3 +16,7 @@ vet:
 
 clean:
 	rm -rf bin/ *.db *.db-wal *.db-shm
+
+# Dependência do módulo 2 (JS AST Extractor)
+jsast-deps:
+	npm install -g esprima

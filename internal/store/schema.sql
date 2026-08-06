@@ -72,3 +72,48 @@ FROM assets a
 JOIN snapshots s ON s.asset_id = a.id
 JOIN commits c ON c.id = s.commit_id
 WHERE c.id = (SELECT MAX(id) FROM commits WHERE target_id = a.target_id);
+
+-- ============================================================================
+-- Módulo 6: Findings Database
+-- ============================================================================
+-- Registra TODO achado (inclusive descartados/false positive) com metadados
+-- suficientes para análise de padrão por alvo ao longo do tempo:
+-- qual módulo gerou, qual parâmetro, qual payload, sinais, severidade.
+-- A coluna `raw` guarda o JSON completo do achado (payload, resposta, sinais).
+
+CREATE TABLE IF NOT EXISTS findings (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id       INTEGER REFERENCES targets(id) ON DELETE CASCADE,
+    target_name     TEXT NOT NULL,               -- denormalizado p/ consultas rápidas
+    url             TEXT NOT NULL,               -- URL/endpoint onde o achado ocorreu
+    module          TEXT NOT NULL,               -- fuzz | jsast | params | oob | state
+    category        TEXT NOT NULL,               -- sqli | xss | ssrf | idor | lfi | oob | info | other
+    severity        TEXT NOT NULL DEFAULT 'info',-- critical | high | medium | low | info
+    status          TEXT NOT NULL DEFAULT 'open',-- open | confirmed | false_positive | duplicate | out_of_scope
+    param           TEXT,                        -- parâmetro/asset envolvido
+    payload         TEXT,                        -- payload utilizado (se aplicável)
+    signal          TEXT,                        -- resumo do sinal (ex: "echo,status_5xx")
+    confidence      REAL DEFAULT 0.5,            -- 0..1 confiança
+    raw             TEXT,                        -- JSON completo do achado
+    first_seen      TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen       TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (target_name, url, module, category, param, payload)
+);
+CREATE INDEX IF NOT EXISTS idx_findings_target ON findings(target_name, first_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
+
+-- Callbacks OOB recebidos (módulo 5), correlacionados ou não.
+CREATE TABLE IF NOT EXISTS oob_callbacks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    token       TEXT NOT NULL,                   -- token de correlação do payload
+    source      TEXT NOT NULL,                   -- local | interactsh
+    protocol    TEXT NOT NULL DEFAULT 'http',    -- http | dns
+    remote_ip   TEXT,
+    user_agent  TEXT,
+    path        TEXT,
+    headers     TEXT,
+    body        TEXT,
+    raw         TEXT,
+    received_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_oob_token ON oob_callbacks(token);
