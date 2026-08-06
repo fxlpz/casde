@@ -170,7 +170,7 @@ func (s *SQLiteStore) SaveExecution(ctx context.Context, targetID int64, snaps [
 			VALUES(?, ?, ?, ?, ?, ?, ?)`,
 			snaps[i].AssetID, commitID, snaps[i].StatusCode,
 			snaps[i].BodyHash, snaps[i].BodySize, snaps[i].HeadersJSON, now()); err != nil {
-			return nil, fmt.Errorf("inserir snapshot %s: %w", snaps[i].AssetID, err)
+			return nil, fmt.Errorf("inserir snapshot asset %d: %w", snaps[i].AssetID, err)
 		}
 	}
 
